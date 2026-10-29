@@ -46,6 +46,7 @@ class CaptureService : Service() {
     private var prevSig: IntArray? = null
     private var lastText = ""
     private val cache = HashMap<String, String>()
+    private val history = ArrayList<String>()
     private var translatorReady = false
     private lateinit var translator: Translator
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
@@ -211,21 +212,47 @@ class CaptureService : Service() {
             .addOnFailureListener { crop.recycle(); busy = false }
     }
 
+    private fun finish(text: String, tr: String) {
+        if (cache.size > 200) cache.clear()
+        cache[text] = tr
+        history.add(text)
+        while (history.size > 6) history.removeAt(0)
+        setOverlay(tr)
+        busy = false
+    }
+
+    private fun offline(text: String) {
+        if (!translatorReady) {
+            setOverlay("Çeviri modeli indiriliyor…")
+            lastText = ""
+            busy = false
+            return
+        }
+        translator.translate(text)
+            .addOnSuccessListener { tr -> finish(text, tr) }
+            .addOnFailureListener { lastText = ""; busy = false }
+    }
+
     private fun handle(raw: String) {
         val text = raw.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
         if (text.length < 3) { lastText = ""; setOverlay(""); busy = false; return }
         if (text == lastText) { busy = false; return }
         cache[text]?.let { lastText = text; setOverlay(it); busy = false; return }
-        if (!translatorReady) { setOverlay("Çeviri modeli indiriliyor…"); busy = false; return }
         lastText = text
-        translator.translate(text)
-            .addOnSuccessListener { tr ->
-                if (cache.size > 200) cache.clear()
-                cache[text] = tr
-                setOverlay(tr)
-                busy = false
+        val p = getSharedPreferences("cfg", MODE_PRIVATE)
+        val key = p.getString("key", "") ?: ""
+        val game = p.getString("game", "") ?: ""
+        if (key.isEmpty()) {
+            offline(text)
+            return
+        }
+        val hist = history.takeLast(3).toList()
+        Thread {
+            val r = AiTranslate.translate(key, game, hist, text)
+            ui.post {
+                if (r != null && r.isNotEmpty()) finish(text, r) else offline(text)
             }
-            .addOnFailureListener { lastText = ""; busy = false }
+        }.start()
     }
 
     override fun onDestroy() {
