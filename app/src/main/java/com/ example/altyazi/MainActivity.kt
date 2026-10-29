@@ -8,6 +8,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
 import android.widget.*
 
 class MainActivity : Activity() {
@@ -30,6 +33,21 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun field(key: String, hintText: String, secret: Boolean) = EditText(this).apply {
+        hint = hintText
+        inputType = InputType.TYPE_CLASS_TEXT or
+            (if (secret) InputType.TYPE_TEXT_VARIATION_PASSWORD else 0)
+        val p = getSharedPreferences("cfg", MODE_PRIVATE)
+        setText(p.getString(key, ""))
+        addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                p.edit().putString(key, s?.toString()?.trim() ?: "").apply()
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -40,6 +58,10 @@ class MainActivity : Activity() {
             setPadding(40, 100, 40, 40)
         }
         root.addView(TextView(this).apply { text = "Altyazı Çevir (İngilizce → Türkçe)"; textSize = 22f })
+        root.addView(label("Oyun adı (ör. God of War)"))
+        root.addView(field("game", "Oyun adı", false))
+        root.addView(label("API anahtarı (boşsa internetsiz çeviri)"))
+        root.addView(field("key", "sk-ant-...", true))
         root.addView(label("Altyazı bölgesi: üst sınır (%)"))
         root.addView(seek("top", 70))
         root.addView(label("Altyazı bölgesi: alt sınır (%)"))
@@ -52,7 +74,7 @@ class MainActivity : Activity() {
             text = "Durdur"
             setOnClickListener { stopService(Intent(this@MainActivity, CaptureService::class.java)) }
         })
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
     }
 
     private fun start() {
