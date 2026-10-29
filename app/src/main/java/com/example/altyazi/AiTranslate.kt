@@ -14,20 +14,20 @@ object AiTranslate {
                 "Karakter, yer ve oyun terimlerini oyunun bilinen adlarıyla tutarlı kullan. " +
                 "Konuşanın adı altyazıda yazıyorsa ya da bağlamdan çok net biliniyorsa ilk satıra " +
                 "'Konuşan: İsim', ikinci satıra çeviriyi yaz. Emin değilsen yalnızca çeviriyi yaz, " +
-                "konuşan uydurma. Başka açıklama ekleme."
+                "konuşan uydurma. Çok kısa ve hızlı cevap ver, başka açıklama ekleme."
             val user = "Önceki satırlar:\n" + history.joinToString("\n") +
                 "\n\nÇevrilecek:\n" + text
             val body = JSONObject()
                 .put("model", "claude-haiku-5-5")
-                .put("max_tokens", 300)
+                .put("max_tokens", 160)
                 .put("system", system)
                 .put("messages", JSONArray().put(
                     JSONObject().put("role", "user").put("content", user)))
             val c = URL("https://api.anthropic.com/v1/messages")
                 .openConnection() as HttpURLConnection
             c.requestMethod = "POST"
-            c.connectTimeout = 5000
-            c.readTimeout = 10000
+            c.connectTimeout = 4000
+            c.readTimeout = 7000
             c.setRequestProperty("content-type", "application/json")
             c.setRequestProperty("x-api-key", key)
             c.setRequestProperty("anthropic-version", "2023-06-01")
