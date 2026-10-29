@@ -45,6 +45,7 @@ class CaptureService : Service() {
     private var seq = 0
     private var aiDoneSeq = 0
     private var started = false
+    private var lastOcr = 0L
     private var prevSig: IntArray? = null
     private var lastText = ""
     private val cache = HashMap<String, String>()
@@ -195,18 +196,19 @@ class CaptureService : Service() {
 
         if (busy) { crop.recycle(); return }
 
-        val small = Bitmap.createScaledBitmap(crop, 48, 12, true)
-        val px = IntArray(48 * 12)
-        small.getPixels(px, 0, 48, 0, 0, 48, 12)
+        val small = Bitmap.createScaledBitmap(crop, 96, 24, true)
+        val px = IntArray(96 * 24)
+        small.getPixels(px, 0, 96, 0, 0, 96, 24)
         small.recycle()
         val sig = IntArray(px.size) { (px[it] shr 8) and 0xFF }
         val prev = prevSig
         if (prev != null) {
             var d = 0
             for (i in sig.indices) d += abs(sig[i] - prev[i])
-            if (d / sig.size < 5) { crop.recycle(); return }
+            if (d / sig.size < 2 && SystemClock.elapsedRealtime() - lastOcr < 1000) { crop.recycle(); return }
         }
         prevSig = sig
+        lastOcr = SystemClock.elapsedRealtime()
 
         busy = true
         recognizer.process(InputImage.fromBitmap(crop, 0))
@@ -265,13 +267,4 @@ class CaptureService : Service() {
 
     override fun onDestroy() {
         running = false
-        try { if (thread.isAlive) { bg.removeCallbacksAndMessages(null); thread.quitSafely() } } catch (e: Exception) {}
-        try { vd?.release() } catch (e: Exception) {}
-        try { reader?.close() } catch (e: Exception) {}
-        try { projection?.stop() } catch (e: Exception) {}
-        try { overlay?.let { wm.removeView(it) } } catch (e: Exception) {}
-        try { recognizer.close() } catch (e: Exception) {}
-        try { if (::translator.isInitialized) translator.close() } catch (e: Exception) {}
-        super.onDestroy()
-    }
-}
+        try { if (thread.isAlive) { bg.removeCallbacksAndMessages(null); thread.quitSafe
