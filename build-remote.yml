@@ -1,0 +1,66 @@
+name: Build Remote APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Bizim kaynak zipini ac
+        shell: bash
+        run: |
+          set -e
+          ZIP=$(git log --name-only --pretty=format: -n 50 \
+                | grep -iE '^.*altyazi-src.*\.zip$' \
+                | head -n 1 || true)
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            ZIP=$(ls -t *altyazi-src*.zip 2>/dev/null | head -n 1)
+          fi
+          echo "Kullanilan kaynak: $ZIP"
+          rm -rf bizim
+          mkdir bizim
+          unzip -q "$ZIP" -d bizim
+          ls bizim/remote
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Android NDK kur
+        run: |
+          set -e
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;28.2.13676358" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Chiaki kaynagini al ve yamala
+        run: bash bizim/remote/uygula.sh chiaki-kaynak
+
+      - name: Derle
+        working-directory: chiaki-kaynak/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: APK yolunu bul
+        id: apk
+        shell: bash
+        run: |
+          YOL=$(find chiaki-kaynak/android -name "*.apk" | head -n 1)
+          echo "Bulunan APK: $YOL"
+          echo "yol=$YOL" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LingoPlay-Remote-${{ github.run_number }}
+          path: ${{ steps.apk.outputs.yol }}
+          if-no-files-found: error
