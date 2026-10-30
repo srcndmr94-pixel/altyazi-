@@ -1,255 +1,244 @@
-package com.example.altyazi
-import android.app.*
+```kotlin
+package com.example.subtitles
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.*
-import android.util.DisplayMetrics
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
+import androidx.core.app.NotificationCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+
 class CaptureService : Service() {
-  private var projection: MediaProjection? = null
-  private var vd: VirtualDisplay? = null
-  private var reader: ImageReader? = null
-  private var capW = 0
-  private var capH = 0
-  private var overlay: TextView? = null
-  private val ui = Handler(Looper.getMainLooper())
-  private val thread = HandlerThread("cap")
-  private lateinit var bg: Handler
-  private lateinit var wm: WindowManager
-  private var running = false
-  @Volatile private var busy = false
-  private var seq = 0
-  private var aiDoneSeq = 0
-  private var started = false
-  private var lastOcr = 0L
-  private var prevSig: IntArray? = null
-  private var lastText = ""
-  private val cache = HashMap<String, String>()
-  private val history = ArrayList<String>()
-  private var translatorReady = false
-  private lateinit var translator: Translator
-  private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
-  override fun onBind(i: Intent?): IBinder? = null
-  @Suppress("DEPRECATION")
-  private fun getData(i: Intent): Intent? =
-    if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra("data", Intent::class.java)
-    else i.getParcelableExtra("data")
-  @Suppress("DEPRECATION")
-  private fun metrics(): DisplayMetrics {
-    val m = DisplayMetrics()
-    wm.defaultDisplay.getRealMetrics(m)
-    return m
-  }
-  private fun capSize(m: DisplayMetrics): Pair<Int, Int> {
-    val s = min(1f, 1280f / max(m.widthPixels, m.heightPixels).toFloat())
-    return Pair((m.widthPixels * s).toInt(), (m.heightPixels * s).toInt())
-  }
-  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    if (intent == null || started) return START_NOT_STICKY
-    started = true
-    startFg()
-    wm = getSystemService(WINDOW_SERVICE) as WindowManager
-    val data = getData(intent)
-    if (data == null) { stopSelf(); return START_NOT_STICKY }
-    val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-    projection = mpm.getMediaProjection(intent.getIntExtra("code", 0), data)
-    projection?.registerCallback(object : MediaProjection.Callback() {
-      override fun onStop() { stopSelf() }
-    }, ui)
-    setupTranslator()
-    addOverlay()
-    thread.start()
-    bg = Handler(thread.looper)
-    running = true
-    createCapture()
-    bg.post(tick)
-    return START_NOT_STICKY
-  }
-  private fun startFg() {
-    val nm = getSystemService(NotificationManager::class.java)
-    nm.createNotificationChannel(NotificationChannel("cap", "Altyazı", NotificationManager.IMPORTANCE_LOW))
-    val n = Notification.Builder(this, "cap")
-      .setContentTitle("Altyazı çeviri çalışıyor")
-      .setSmallIcon(android.R.drawable.ic_menu_view)
-      .build()
-    if (Build.VERSION.SDK_INT >= 29)
-      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-    else startForeground(1, n)
-  }
-  private fun setupTranslator() {
-    translator = Translation.getClient(
-      TranslatorOptions.Builder()
-        .setSourceLanguage(TranslateLanguage.ENGLISH)
-        .setTargetLanguage(TranslateLanguage.TURKISH)
-        .build()
-    )
-    translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-      .addOnSuccessListener { translatorReady = true }
-  }
-  private fun addOverlay() {
-    val tv = TextView(this).apply {
-      textSize = 20f
-      setTextColor(Color.WHITE)
-      setBackgroundColor(0xCC000000.toInt())
-      setPadding(24, 12, 24, 12)
-      gravity = Gravity.CENTER
-      visibility = View.GONE
+
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    
+    private var windowManager: WindowManager? = null
+    private var overlayView: View? = null
+    private var tvSubtitle: TextView? = null
+
+    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    
+    private var lastExtractedText = ""
+    private var isProcessing = false
+    private var screenWidth = 1080
+    private var screenHeight = 1920
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundService()
+        initOverlay()
     }
-    val lp = WindowManager.LayoutParams(
-      WindowManager.LayoutParams.WRAP_CONTENT,
-      WindowManager.LayoutParams.WRAP_CONTENT,
-      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-      PixelFormat.TRANSLUCENT
-    ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = 40 }
-    wm.addView(tv, lp)
-    overlay = tv
-  }
-  private fun setOverlay(s: String) {
-    ui.post {
-      overlay?.let {
-        it.text = s
-        it.visibility = if (s.isEmpty()) View.GONE else View.VISIBLE
-      }
-    }
-  }
-  private fun createCapture() {
-    val m = metrics()
-    val (w, h) = capSize(m)
-    capW = w; capH = h
-    reader?.close()
-    reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-    if (vd == null) {
-      vd = projection!!.createVirtualDisplay(
-        "cap", w, h, m.densityDpi,
-        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-        reader!!.surface, null, null
-      )
-    } else {
-      vd!!.resize(w, h, m.densityDpi)
-      vd!!.surface = reader!!.surface
-    }
-    prevSig = null
-  }
-  private val tick = object : Runnable {
-    override fun run() {
-      if (!running) return
-      try { step() } catch (e: Exception) { busy = false }
-      bg.postDelayed(this, 200)
-    }
-  }
-  private fun step() {
-    val (w, h) = capSize(metrics())
-    if (abs(w - capW) > 2 || abs(h - capH) > 2) { createCapture(); return }
-    val img = reader?.acquireLatestImage() ?: return
-    val full: Bitmap
-    try {
-      val pl = img.planes[0]
-      val rw = pl.rowStride / pl.pixelStride
-      full = Bitmap.createBitmap(rw, img.height, Bitmap.Config.ARGB_8888)
-      full.copyPixelsFromBuffer(pl.buffer)
-    } finally { img.close() }
-    val p = getSharedPreferences("cfg", MODE_PRIVATE)
-    val b = p.getInt("bottom", 95).coerceIn(5, 100)
-    val t = min(p.getInt("top", 70), b - 5).coerceAtLeast(0)
-    val y0 = capH * t / 100
-    val y1 = capH * b / 100
-    val crop = Bitmap.createBitmap(full, 0, y0, capW, max(1, y1 - y0))
-    full.recycle()
-    if (busy) { crop.recycle(); return }
-    val small = Bitmap.createScaledBitmap(crop, 96, 24, true)
-    val px = IntArray(96 * 24)
-    small.getPixels(px, 0, 96, 0, 0, 96, 24)
-    small.recycle()
-    val sig = IntArray(px.size) { (px[it] shr 8) and 0xFF }
-    val prev = prevSig
-    if (prev != null) {
-      var d = 0
-      for (i in sig.indices) d += abs(sig[i] - prev[i])
-      if (d / sig.size < 2 && SystemClock.elapsedRealtime() - lastOcr < 1000) { crop.recycle(); return }
-    }
-    prevSig = sig
-    lastOcr = SystemClock.elapsedRealtime()
-    busy = true
-    recognizer.process(InputImage.fromBitmap(crop, 0))
-      .addOnSuccessListener { r -> crop.recycle(); handle(r.text) }
-      .addOnFailureListener { crop.recycle(); busy = false }
-  }
-  private fun norm(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
-  private fun finish(text: String, tr: String) {
-    if (cache.size > 300) cache.clear()
-    cache[norm(text)] = tr
-    if (history.lastOrNull() != text) history.add(text)
-    while (history.size > 6) history.removeAt(0)
-  }
-  private fun handle(raw: String) {
-    val text = raw.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
-    if (text.length < 3) {
-      lastText = ""; seq++; setOverlay(""); busy = false; return
-    }
-    if (text == lastText) { busy = false; return }
-    lastText = text
-    val mySeq = ++seq
-    busy = false
-    val cached = cache[norm(text)]
-    if (cached != null) { setOverlay(cached); return }
-    val p = getSharedPreferences("cfg", MODE_PRIVATE)
-    val key = p.getString("key", "") ?: ""
-    val game = p.getString("game", "") ?: ""
-    if (translatorReady) {
-      translator.translate(text).addOnSuccessListener { tr ->
-        if (mySeq == seq && aiDoneSeq != mySeq) {
-          setOverlay(tr)
-          if (key.isEmpty()) finish(text, tr)
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
+        val data = intent?.getParcelableExtra<Intent>("DATA")
+
+        if (resultCode != -1 && data != null) {
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+            setupVirtualDisplay()
+            startCaptureLoop()
         }
-      }
-    } else if (key.isEmpty()) {
-      setOverlay("Çeviri modeli indiriliyor…")
+
+        return START_STICKY
     }
-    if (key.isEmpty()) return
-    val hist = history.takeLast(3).toList()
-    Thread {
-      val r = AiTranslate.translate(key, game, hist, text)
-      ui.post {
-        if (r != null && r.isNotEmpty()) {
-          finish(text, r)
-          if (mySeq == seq) { aiDoneSeq = mySeq; setOverlay(r) }
+
+    private fun startForegroundService() {
+        val channelId = "subtitle_service"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Altyazı Çeviri Servisi",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
-      }
-    }.start()
-  }
-  private fun q(f: () -> Unit) { try { f() } catch (e: Exception) {} }
-  override fun onDestroy() {
-    running = false
-    q { if (thread.isAlive) { bg.removeCallbacksAndMessages(null); thread.quitSafely() } }
-    q { vd?.release() }
-    q { reader?.close() }
-    q { projection?.stop() }
-    q { overlay?.let { wm.removeView(it) } }
-    q { recognizer.close() }
-    q { if (::translator.isInitialized) translator.close() }
-    super.onDestroy()
-  }
+
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Altyazı Çevirici Çalışıyor")
+            .setContentText("Ekran okunuyor ve çevriliyor...")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .build()
+
+        startForeground(1, notification)
+    }
+
+    private fun initOverlay() {
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val inflater = LayoutInflater.from(this)
+        overlayView = inflater.inflate(R.layout.overlay_subtitle, null)
+        tvSubtitle = overlayView?.findViewById(R.id.tvSubtitle)
+
+        val metrics = resources.displayMetrics
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = 100
+        }
+
+        windowManager?.addView(overlayView, params)
+    }
+
+    private fun setupVirtualDisplay() {
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "SubtitleCapture",
+            screenWidth,
+            screenHeight,
+            resources.displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface,
+            null,
+            null
+        )
+    }
+
+    private fun startCaptureLoop() {
+        serviceScope.launch {
+            while (true) {
+                if (!isProcessing) {
+                    captureAndProcess()
+                }
+                delay(300) // 300ms tarama sıklığı
+            }
+        }
+    }
+
+    private fun captureAndProcess() {
+        val image = imageReader?.acquireLatestImage() ?: return
+        isProcessing = true
+
+        serviceScope.launch(Dispatchers.Default) {
+            try {
+                val bitmap = imageToBitmap(image)
+                image.close()
+
+                if (bitmap != null) {
+                    // Ekranın alt %30'luk altyazı bölgesini kırp
+                    val cropY = (screenHeight * 0.7).toInt()
+                    val cropHeight = (screenHeight * 0.25).toInt()
+                    val croppedBitmap = Bitmap.createBitmap(bitmap, 0, cropY, screenWidth, cropHeight)
+
+                    val inputImage = InputImage.fromBitmap(croppedBitmap, 0)
+                    recognizer.process(inputImage)
+                        .addOnSuccessListener { visionText ->
+                            val detectedText = visionText.text.trim().replace("\n", " ")
+                            handleDetectedText(detectedText)
+                        }
+                        .addOnCompleteListener {
+                            isProcessing = false
+                        }
+                } else {
+                    isProcessing = false
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                isProcessing = false
+            }
+        }
+    }
+
+    private fun handleDetectedText(text: String) {
+        if (text.isEmpty()) {
+            if (lastExtractedText.isNotEmpty()) {
+                lastExtractedText = ""
+                updateOverlayText("")
+            }
+            return
+        }
+
+        if (text == lastExtractedText) return
+        lastExtractedText = text
+
+        // 1. Aşama: Hızlı Tahmini/Geçici Gösterim
+        val quickTranslation = "[... " + text + " ...]"
+        updateOverlayText(quickTranslation)
+
+        // 2. Aşama: Claude API ile Kaliteli Çeviri
+        serviceScope.launch {
+            val fullTranslation = AiTranslate.translateWithClaude(text)
+            if (lastExtractedText == text && fullTranslation.isNotEmpty()) {
+                updateOverlayText(fullTranslation)
+            }
+        }
+    }
+
+    private fun updateOverlayText(text: String) {
+        serviceScope.launch(Dispatchers.Main) {
+            if (text.isEmpty()) {
+                overlayView?.visibility = View.GONE
+            } else {
+                overlayView?.visibility = View.VISIBLE
+                tvSubtitle?.text = text
+            }
+        }
+    }
+
+    private fun imageToBitmap(image: Image): Bitmap? {
+        val planes = image.planes
+        val buffer: ByteBuffer = planes[0].buffer
+        val pixelStride = planes[0].pixelStride
+        val rowStride = planes[0].rowStride
+        val rowPadding = rowStride - pixelStride * screenWidth
+
+        val bitmap = Bitmap.createBitmap(
+            screenWidth + rowPadding / pixelStride,
+            screenHeight,
+            Bitmap.Config.ARGB_8888
+        )
+        bitmap.copyPixelsFromBuffer(buffer)
+        return Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        virtualDisplay?.release()
+        mediaProjection?.stop()
+        overlayView?.let { windowManager?.removeView(it) }
+    }
 }
+```
