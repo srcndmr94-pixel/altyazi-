@@ -11,43 +11,48 @@ import org.json.JSONArray
 
 object AiTranslate {
 
-    // Buraya kendi Claude API anahtarınızı girin
-    private const val API_KEY = "YOUR_CLAUDE_API_KEY"
-    private const val API_URL = "https://api.anthropic.com/v1/messages"
+    // Kendi Gemini API Anahtarınız Entegre Edildi
+    private const val API_KEY = "AQ.Ab8RN6J9G3HMBqJ42-0YN9Ilzh2aOOEDnpy0dEP7CK5eD8gXHA"
+    private const val API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
     suspend fun translateWithClaude(text: String, gameName: String = "PS5 Game"): String = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext ""
-        if (API_KEY == "YOUR_CLAUDE_API_KEY" || API_KEY.isBlank()) {
+        if (API_KEY.isBlank()) {
             return@withContext "Hata: API Key girilmedi."
         }
 
         try {
-            val url = URL(API_URL)
+            val url = URL("$API_URL?key=$API_KEY")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
-            conn.setRequestProperty("x-api-key", API_KEY)
-            conn.setRequestProperty("anthropic-version", "2023-06-01")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
 
-            val systemPrompt = "Sen profesyonel bir oyun altyazı çevirmenisin. " +
-                    "Oyun adı: $gameName. " +
+            val systemPrompt = "Sen profesyonel bir oyun ve dizi/film altyazı çevirmenisin. " +
+                    "Içerik bağlamı: $gameName. " +
                     "Verilen İngilizce altyazıyı doğal, akıcı ve bağlama uygun Türkçe altyazı olarak çevir. " +
-                    "Sadece Türkçe çeviriyi yaz, ekstra açıklama ekleme. Karakter isimlerini koru."
+                    "Sadece Türkçe çeviriyi yanıt olarak ver, kesinlikle açıklama veya ek not ekleme. " +
+                    "Özel isimleri, karakter adlarını ve yer isimlerini olduğu gibi koru."
 
             val jsonBody = JSONObject().apply {
-                put("model", "claude-3-haiku-20240307")
-                put("max_tokens", 150)
-                put("system", systemPrompt)
-                
-                val messagesArray = JSONArray().apply {
-                    val messageObj = JSONObject().apply {
-                        put("role", "user")
-                        put("content", text)
+                val systemInstruction = JSONObject().apply {
+                    val parts = JSONArray().apply {
+                        put(JSONObject().apply { put("text", systemPrompt) })
                     }
-                    put(messageObj)
+                    put("parts", parts)
                 }
-                put("messages", messagesArray)
+                put("system_instruction", systemInstruction)
+
+                val contentsArray = JSONArray().apply {
+                    val contentObj = JSONObject().apply {
+                        val partsArray = JSONArray().apply {
+                            put(JSONObject().apply { put("text", text) })
+                        }
+                        put("parts", partsArray)
+                    }
+                    put(contentObj)
+                }
+                put("contents", contentsArray)
             }
 
             val writer = OutputStreamWriter(conn.outputStream)
@@ -59,9 +64,16 @@ object AiTranslate {
             if (responseCode == HttpURLConnection.HTTP_OK) {
                 val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                 val jsonResponse = JSONObject(responseText)
-                val contentArray = jsonResponse.getJSONArray("content")
-                if (contentArray.length() > 0) {
-                    return@withContext contentArray.getJSONObject(0).getString("text").trim()
+                val candidates = jsonResponse.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
+                    val candidate = candidates.getJSONObject(0)
+                    val content = candidate.optJSONObject("content")
+                    if (content != null) {
+                        val parts = content.optJSONArray("parts")
+                        if (parts != null && parts.length() > 0) {
+                            return@withContext parts.getJSONObject(0).optString("text", "").trim()
+                        }
+                    }
                 }
             } else {
                 return@withContext "Çeviri hatası ($responseCode)"
