@@ -16,9 +16,7 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -33,7 +31,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 
 class CaptureService : Service() {
@@ -88,8 +85,8 @@ class CaptureService : Service() {
         }
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Altyazı Çevirici Çalışıyor")
-            .setContentText("Ekran okunuyor ve çevriliyor...")
+            .setContentTitle("Canlı Altyazı Çevirici")
+            .setContentText("Ekran taranıyor (Oyun & Video)...")
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
@@ -117,7 +114,7 @@ class CaptureService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = 100
+            y = 120
         }
 
         windowManager?.addView(overlayView, params)
@@ -126,7 +123,7 @@ class CaptureService : Service() {
     private fun setupVirtualDisplay() {
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "SubtitleCapture",
+            "UniversalSubtitleCapture",
             screenWidth,
             screenHeight,
             resources.displayMetrics.densityDpi,
@@ -143,7 +140,7 @@ class CaptureService : Service() {
                 if (!isProcessing) {
                     captureAndProcess()
                 }
-                delay(300) // 300ms tarama sıklığı
+                delay(250) // Tarama periyodu 250ms
             }
         }
     }
@@ -158,16 +155,22 @@ class CaptureService : Service() {
                 image.close()
 
                 if (bitmap != null) {
-                    // Ekranın alt %30'luk altyazı bölgesini kırp
-                    val cropY = (screenHeight * 0.7).toInt()
-                    val cropHeight = (screenHeight * 0.25).toInt()
+                    // Videolar ve oyunlar için optimize edilmiş geniş altyazı alanı (Alt %40)
+                    val cropY = (screenHeight * 0.60).toInt()
+                    val cropHeight = (screenHeight * 0.38).toInt()
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, cropY, screenWidth, cropHeight)
 
                     val inputImage = InputImage.fromBitmap(croppedBitmap, 0)
                     recognizer.process(inputImage)
                         .addOnSuccessListener { visionText ->
-                            val detectedText = visionText.text.trim().replace("\n", " ")
+                            val detectedText = visionText.text
+                                .replace("\n", " ")
+                                .trim()
+                            
                             handleDetectedText(detectedText)
+                        }
+                        .addOnFailureListener {
+                            isProcessing = false
                         }
                         .addOnCompleteListener {
                             isProcessing = false
@@ -183,7 +186,8 @@ class CaptureService : Service() {
     }
 
     private fun handleDetectedText(text: String) {
-        if (text.isEmpty()) {
+        // Ekrandan altyazı kalktıysa ekrandaki çeviriyi temizle
+        if (text.length < 2) {
             if (lastExtractedText.isNotEmpty()) {
                 lastExtractedText = ""
                 updateOverlayText("")
@@ -194,13 +198,12 @@ class CaptureService : Service() {
         if (text == lastExtractedText) return
         lastExtractedText = text
 
-        // 1. Aşama: Hızlı Tahmini/Geçici Gösterim
-        val quickTranslation = "[... " + text + " ...]"
-        updateOverlayText(quickTranslation)
+        // 1. Aşama: Hızlı önizleme
+        updateOverlayText("⏳ " + text)
 
-        // 2. Aşama: Claude API ile Kaliteli Çeviri
+        // 2. Aşama: Claude Yapay Zeka Çevirisi
         serviceScope.launch {
-            val fullTranslation = AiTranslate.translateWithClaude(text)
+            val fullTranslation = AiTranslate.translateWithClaude(text, "Video/Game Content")
             if (lastExtractedText == text && fullTranslation.isNotEmpty()) {
                 updateOverlayText(fullTranslation)
             }
@@ -219,19 +222,23 @@ class CaptureService : Service() {
     }
 
     private fun imageToBitmap(image: Image): Bitmap? {
-        val planes = image.planes
-        val buffer: ByteBuffer = planes[0].buffer
-        val pixelStride = planes[0].pixelStride
-        val rowStride = planes[0].rowStride
-        val rowPadding = rowStride - pixelStride * screenWidth
+        return try {
+            val planes = image.planes
+            val buffer: ByteBuffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * screenWidth
 
-        val bitmap = Bitmap.createBitmap(
-            screenWidth + rowPadding / pixelStride,
-            screenHeight,
-            Bitmap.Config.ARGB_8888
-        )
-        bitmap.copyPixelsFromBuffer(buffer)
-        return Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+            val bitmap = Bitmap.createBitmap(
+                screenWidth + rowPadding / pixelStride,
+                screenHeight,
+                Bitmap.Config.ARGB_8888
+            )
+            bitmap.copyPixelsFromBuffer(buffer)
+            Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     override fun onDestroy() {
