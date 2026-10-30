@@ -12,7 +12,7 @@ import org.json.JSONArray
 object AiTranslate {
 
     // Kendi Gemini API Anahtarınız Entegre Edildi
-    private const val API_KEY = "AQ.Ab8RN6J9G3HMBqJ42-0YN9Ilzh2aOOEDnpy0dEP7CK5eD8gXHA"
+    private const val API_KEY = "AQ.Ab8RN6LLRxvKT1_z2zC0ODGiwXWfN1u11CHYuNUvTFnTBuRETA"
     private const val API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
     suspend fun translateWithClaude(text: String, gameName: String = "PS5 Game"): String = withContext(Dispatchers.IO) {
